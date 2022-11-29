@@ -9,3 +9,5 @@ RUN mkdir /root/i3logs
 COPY ./.xinitrc /root/
 COPY ./.Xresources /root/
 COPY ./vnc.sh /root/
+RUN apk add --no-cache g++ gcc
+RUN wget -O- https://aka.ms/install-vscode-server/setup.sh | sh
