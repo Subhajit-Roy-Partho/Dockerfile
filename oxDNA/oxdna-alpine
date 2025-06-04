@@ -1,0 +1,39 @@
+FROM alpine:latest
+
+# Install required packages
+RUN apk update && apk upgrade && \
+    apk add --no-cache bash tzdata build-base cmake git wget curl neovim python3 py3-pip
+
+# Set timezone to America/Phoenix and configure bash settings
+ENV TZ=America/Phoenix
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo "$TZ" > /etc/timezone && \
+    mkdir -p /root && \
+    echo 'export PS1="\[\e[1;32m\]\u@\h:\[\e[1;34m\]\w\[\e[0m\]$ "' >> /root/.bashrc && \
+    echo 'alias ll="ls -alF"' >> /root/.bashrc && \
+    echo 'alias la="ls -A"' >> /root/.bashrc && \
+    echo 'alias l="ls -CF"' >> /root/.bashrc && \
+    echo 'alias h="history"' >> /root/.bashrc && \
+    echo 'export CLICOLOR=1' >> /root/.bashrc && \
+    echo 'export LSCOLORS=GxFxCxDxBxegedabagaced' >> /root/.bashrc && \
+    echo "shopt -s autocd" >> /root/.bashrc && \
+    echo 'export PATH=/opt/venv/bin:/root/Github/oxDNA/build/bin:$PATH' >> /root/.bashrc
+
+# Create necessary directories
+RUN mkdir -p /root/Github /root/Github/ipy_oxDNA
+
+WORKDIR /root/Github
+
+# Create a Python virtual environment, install setuptools, and clone the repository
+RUN python3 -m venv /opt/venv && \
+    /opt/venv/bin/pip install setuptools && \
+    git clone https://github.com/Subhajit-Roy-Partho/oxDNA.git && \
+    mkdir -p /root/Github/oxDNA/build
+
+WORKDIR /root/Github/oxDNA/build
+
+# Configure, build, and install oxDNA
+RUN cmake -DCMAKE_BUILD_TYPE=Release -DCUDA=off -DPython=on -DOxpySystemInstall=on .. && \
+    make -j$(grep -c ^processor /proc/cpuinfo) && \
+    make install
+
+CMD ["/bin/bash"]

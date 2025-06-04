@@ -1,0 +1,42 @@
+FROM nvidia/cuda:12.8.1-devel-ubuntu24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get upgrade -y && apt-get clean
+
+# Set the timezone to America/Phoenix
+RUN ln -snf /usr/share/zoneinfo/America/Phoenix /etc/localtime && \
+    echo "America/Phoenix" > /etc/timezone && \
+    echo 'export PS1="\[\e[1;32m\]\u@\h:\[\e[1;34m\]\w\[\e[0m\]$ "' >> /root/.bashrc && \
+    echo 'alias ll="ls -alF"' >> /root/.bashrc && \
+    echo 'alias la="ls -A"' >> /root/.bashrc && \
+    echo 'alias l="ls -CF"' >> /root/.bashrc && \
+    echo 'alias h="history"' >> /root/.bashrc && \
+    echo 'export CLICOLOR=1' >> /root/.bashrc && \
+    echo 'export LSCOLORS=GxFxCxDxBxegedabagaced' >> /root/.bashrc && \
+    echo "shopt -s autocd">> /root/.bashrc; echo 'export PATH=/opt/venv/bin:/root/Github/oxDNA/build/bin:$PATH' >> /root/.bashrc
+    #echo 'source /etc/bash_completion' >> /root/.bashrc &&\
+
+
+RUN apt-get install -y build-essential cmake git wget curl neovim python3 python3-pip python3-venv g++ gcc && \
+    apt-get clean && \
+    mkdir -p /root/Github && \
+    mkdir -p /root/Github/ipy_oxDNA &&\
+    mkdir -p /app
+
+
+WORKDIR /root/Github
+
+####### OxDNA #######
+ENV PATH="/opt/venv/bin:/root/Github/oxDNA/build/bin:$PATH"
+
+RUN python3 -m venv /opt/venv &&\
+    pip install setuptools &&\
+    git clone https://github.com/Subhajit-Roy-Partho/oxDNA.git &&\
+    mkdir -p /root/Github/oxDNA/build
+
+WORKDIR /root/Github/oxDNA/build
+RUN cmake -DCMAKE_BUILD_TYPE=Release -DCUDA=on -DPython=on -DOxpySystemInstall=on ..; make -j10; make install; \
+    cd ../analysis && \
+    pip install -e .
+WORKDIR /app 
+
+CMD ["/bin/bash"]
