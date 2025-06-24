@@ -33,11 +33,8 @@ RUN cd /root && \
     chmod +x /root/vnc.sh && \
     echo "source /opt/venv/bin/activate" >> /root/.bashrc
 
-RUN VNC_PASSWORD="vncserver123" && \
-	mkdir -p /root/.vnc && \
-	echo "$VNC_PASSWORD" | vncpasswd -f > /root/.vnc/passwd && \
-	chmod 600 /root/.vnc/passwd && \
-
 WORKDIR /app
+RUN mkdir -p ~/.vnc && \
+    x11vnc -storepasswd vncserver123 ~/.vnc/passwd
 EXPOSE 5900
 CMD ["/root/vnc.sh"]
