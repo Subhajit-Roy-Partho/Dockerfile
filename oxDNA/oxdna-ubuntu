@@ -38,6 +38,7 @@ WORKDIR /root/Github/oxDNA/build
 RUN cmake -DCMAKE_BUILD_TYPE=Release -DCUDA=off -DPython=on -DOxpySystemInstall=on ..; make -j10; make install;\
     cd ../analysis && \
     pip install -e .
+RUN cd /root/Github/oxDNA/build && make install
 WORKDIR /app
 
 CMD ["/bin/bash"]
