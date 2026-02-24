@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+set +u
+source /usr/local/gromacs/bin/GMXRC
+set -u
+
+export OMPI_ALLOW_RUN_AS_ROOT=1
+export OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
+
+SELFTEST_SCRIPT="/opt/gromacs-swaxs/tests/selftest_gpu.sh"
+
+die() {
+    echo "swaxs: $*" >&2
+    exit 1
+}
+
+usage() {
+    cat <<'EOF'
+Usage:
+  swaxs run --traj FILE --structure FILE [options]
+  swaxs selftest
+  swaxs help
+
+Commands:
+  run       Run SWAXS using gmx_mpi scattering
+  selftest  Run GPU-required end-to-end validation
+  help      Show this help
+
+Run Options:
+  --traj, -f FILE        Input trajectory/configuration file (required)
+  --structure, -s FILE   Input structure file (required)
+  --index, -n FILE       Optional index file
+  --selection, --sel STR Selection string (default: all)
+  --type TYPE            Scattering type: saxs or sans (default: saxs)
+  --startq REAL          Start q value in 1/nm (default: 0)
+  --endq REAL            End q value in 1/nm (default: 2)
+  --qspacing REAL        Q spacing in 1/nm (default: 0.01)
+  --output, -o FILE      Output XVG file (default: scattering.xvg)
+  --help, -h             Show run help
+EOF
+}
+
+run_usage() {
+    cat <<'EOF'
+Usage:
+  swaxs run --traj FILE --structure FILE [options]
+
+Required:
+  --traj, -f FILE
+  --structure, -s FILE
+
+Optional:
+  --index, -n FILE
+  --selection, --sel STR
+  --type saxs|sans
+  --startq REAL
+  --endq REAL
+  --qspacing REAL
+  --output, -o FILE
+EOF
+}
+
+require_tool() {
+    command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
+}
+
+require_value() {
+    local opt="$1"
+    local val="${2:-}"
+    [[ -n "$val" ]] || die "Option $opt requires a value"
+}
+
+run_command() {
+    local traj=""
+    local structure=""
+    local index=""
+    local selection="all"
+    local scattering_type="saxs"
+    local startq="0"
+    local endq="2"
+    local qspacing="0.01"
+    local output="scattering.xvg"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --traj|-f)
+                require_value "$1" "${2:-}"
+                traj="$2"
+                shift 2
+                ;;
+            --structure|-s)
+                require_value "$1" "${2:-}"
+                structure="$2"
+                shift 2
+                ;;
+            --index|-n)
+                require_value "$1" "${2:-}"
+                index="$2"
+                shift 2
+                ;;
+            --selection|--sel)
+                require_value "$1" "${2:-}"
+                selection="$2"
+                shift 2
+                ;;
+            --type)
+                require_value "$1" "${2:-}"
+                scattering_type="$2"
+                shift 2
+                ;;
+            --startq)
+                require_value "$1" "${2:-}"
+                startq="$2"
+                shift 2
+                ;;
+            --endq)
+                require_value "$1" "${2:-}"
+                endq="$2"
+                shift 2
+                ;;
+            --qspacing)
+                require_value "$1" "${2:-}"
+                qspacing="$2"
+                shift 2
+                ;;
+            --output|-o)
+                require_value "$1" "${2:-}"
+                output="$2"
+                shift 2
+                ;;
+            --help|-h)
+                run_usage
+                exit 0
+                ;;
+            *)
+                die "Unknown run option: $1"
+                ;;
+        esac
+    done
+
+    [[ -n "$traj" ]] || die "Missing required option: --traj"
+    [[ -n "$structure" ]] || die "Missing required option: --structure"
+    [[ -f "$traj" ]] || die "Trajectory/configuration file not found: $traj"
+    [[ -f "$structure" ]] || die "Structure file not found: $structure"
+
+    if [[ -n "$index" && ! -f "$index" ]]; then
+        die "Index file not found: $index"
+    fi
+
+    case "$scattering_type" in
+        saxs|sans) ;;
+        *)
+            die "Invalid --type value '$scattering_type'. Allowed: saxs, sans"
+            ;;
+    esac
+
+    mkdir -p "$(dirname "$output")"
+
+    require_tool mpirun
+    require_tool gmx_mpi
+
+    local cmd=(
+        mpirun -np 1
+        gmx_mpi scattering
+        -f "$traj"
+        -s "$structure"
+        -o "$output"
+        -scattering-type "$scattering_type"
+        -sel "$selection"
+        -startq "$startq"
+        -endq "$endq"
+        -qspacing "$qspacing"
+    )
+
+    if [[ -n "$index" ]]; then
+        cmd+=(-n "$index")
+    fi
+
+    "${cmd[@]}"
+
+    [[ -s "$output" ]] || die "Output file was not created or is empty: $output"
+    echo "SWAXS completed successfully: $output"
+}
+
+selftest_command() {
+    [[ -x "$SELFTEST_SCRIPT" ]] || die "Selftest script not found: $SELFTEST_SCRIPT"
+    exec "$SELFTEST_SCRIPT" "$@"
+}
+
+main() {
+    local subcommand="${1:-help}"
+    case "$subcommand" in
+        run)
+            shift
+            run_command "$@"
+            ;;
+        selftest)
+            shift
+            selftest_command "$@"
+            ;;
+        help|--help|-h)
+            usage
+            ;;
+        *)
+            die "Unknown command: $subcommand (use 'swaxs help')"
+            ;;
+    esac
+}
+
+main "$@"
