@@ -1,0 +1,3 @@
+image: subhajitroy/vnc:latest
+# Populated from Docker Hub repository subhajitroy/vnc
+# Tag chosen: latest

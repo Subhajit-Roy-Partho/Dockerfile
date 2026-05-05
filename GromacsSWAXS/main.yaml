@@ -1,0 +1,3 @@
+image: subhajitroy/gromacs-swaxs:2025.0-cuda12.8-gpu-mpi
+# Populated from Docker Hub repository subhajitroy/gromacs-swaxs
+# Tag chosen: 2025.0-cuda12.8-gpu-mpi

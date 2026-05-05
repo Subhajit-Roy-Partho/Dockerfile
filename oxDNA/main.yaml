@@ -1,0 +1,3 @@
+image: subhajitroy/oxdna:ubuntu24-check
+# Populated from Docker Hub repository subhajitroy/oxdna
+# Tag chosen: ubuntu24-check (matches local ubuntu24-check build)
