@@ -1,3 +1,8 @@
-image: subhajitroy/relion:latest
-# Populated from Docker Hub repository subhajitroy/relion
-# Tag chosen: latest
+image: subhajitroy/relion
+# Builds mapping for relion
+builds:
+  - dockerfile: relion
+    tags: ["gpu", "latest"]
+  - dockerfile: relionvnc
+    tags: []
+# 'relion' is the primary GPU-enabled build; 'relionvnc' is a VNC-enabled variant (no Docker Hub tag assigned automatically)

@@ -1,3 +1,6 @@
-image: subhajitroy/gromacs:2025.0-cuda12.8-gpu-mpi
-# Populated from Docker Hub repository subhajitroy/gromacs
-# Tag chosen: 2025.0-cuda12.8-gpu-mpi (specific GPU/MPI build)
+image: subhajitroy/gromacs
+# Builds mapping for gromacs
+builds:
+  - dockerfile: Dockerfile
+    tags: ["2025.0-cuda12.8-gpu-mpi", "latest"]
+# 'latest' kept for convenience; specific GPU/MPI tag is preferred for reproducible builds

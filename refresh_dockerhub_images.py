@@ -65,6 +65,61 @@ def load_main_yaml(dirpath):
     return None
 
 
+def parse_main_yaml_builds(data):
+    """
+    Parse main.yaml structure and return list of build dicts:
+      [{'dockerfile': 'Dockerfile', 'repo': 'namespace/repo', 'tags': ['tag1','tag2']}, ...]
+    Returns None if no usable info found.
+    """
+    if not data or not isinstance(data, dict):
+        return None
+    builds = []
+    top_image = data.get('image') or data.get('repo') or data.get('name')
+    base_repo = None
+    if isinstance(top_image, str):
+        s = top_image.strip()
+        if ':' in s:
+            base_repo, tag = s.rsplit(':', 1)
+            # If no explicit builds list, create a single build entry using optional dockerfile or default Dockerfile
+            if not data.get('builds'):
+                dockerfile = data.get('dockerfile') or 'Dockerfile'
+                builds.append({'dockerfile': dockerfile, 'repo': base_repo, 'tags': [tag]})
+                return builds
+        else:
+            base_repo = s
+
+    if data.get('builds') and isinstance(data['builds'], list):
+        for entry in data['builds']:
+            if isinstance(entry, str):
+                # simple string entries not supported
+                continue
+            dockerfile = entry.get('dockerfile') or entry.get('file') or entry.get('path') or 'Dockerfile'
+            tags = []
+            t = entry.get('tags') or entry.get('tag')
+            if isinstance(t, list):
+                tags = [str(x) for x in t if x]
+            elif isinstance(t, str):
+                tags = [t]
+            entry_image = entry.get('image')
+            repo = entry_image or base_repo
+            if isinstance(repo, str) and ':' in repo:
+                r, tag = repo.rsplit(':', 1)
+                repo = r
+                if not tags:
+                    tags = [tag]
+            builds.append({'dockerfile': dockerfile, 'repo': repo, 'tags': tags})
+        return builds
+
+    # fallback: single image with top-level tag
+    if base_repo:
+        tag = data.get('tag')
+        if tag:
+            dockerfile = data.get('dockerfile') or 'Dockerfile'
+            builds.append({'dockerfile': dockerfile, 'repo': base_repo, 'tags': [tag]})
+            return builds
+    return None
+
+
 def image_from_yaml(data):
     if not data or not isinstance(data, dict):
         return None, None
@@ -251,6 +306,47 @@ def build_and_push(dockerfile, context, full_image, dry_run=False, cleanup=True)
     return True
 
 
+def build_and_push_tags(dockerfile, context, repo, tags, dry_run=False, cleanup=True):
+    """
+    Build once using the first tag and push all tags (tagging the built image).
+    tags: list of tag strings (at least one)
+    """
+    if not tags:
+        logging.info('No tags provided for %s; skipping build', repo)
+        return True
+    first_tag = tags[0]
+    full_image = f"{repo}:{first_tag}"
+    # Build with no cleanup so we can tag additional tags
+    if dry_run:
+        logging.info('DRY RUN: would build %s from %s', full_image, dockerfile)
+        for t in tags[1:]:
+            logging.info('DRY RUN: would tag %s as %s:%s', full_image, repo, t)
+        return True
+    ok = build_and_push(dockerfile, context, full_image, dry_run=False, cleanup=False)
+    if not ok:
+        return False
+    # tag and push remaining tags
+    for tag in tags[1:]:
+        target = f"{repo}:{tag}"
+        try:
+            run_cmd(['docker', 'tag', full_image, target], check=True)
+            run_cmd(['docker', 'push', target], check=True)
+        except Exception as e:
+            logging.error('Failed to tag/push %s: %s', target, e)
+            return False
+    if cleanup:
+        for tag in tags:
+            try:
+                run_cmd(['docker', 'image', 'rm', '-f', f"{repo}:{tag}"], check=False)
+            except Exception:
+                pass
+        try:
+            run_cmd(['docker', 'builder', 'prune', '-f'], check=False)
+        except Exception:
+            pass
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description='Refresh Docker Hub images by rebuilding stale images')
     parser.add_argument('--root', default='.', help='Repository root to scan for Dockerfiles')
@@ -309,51 +405,115 @@ def main():
     for df in dockerfiles:
         ddir = os.path.dirname(df)
         data = load_main_yaml(ddir)
-        image_repo, tag = image_from_yaml(data)
-        if not image_repo:
-            if not args.namespace:
-                logging.warning('No main.yaml and no --namespace provided for Dockerfile %s -> skipping', df)
-                continue
-            repo_name = os.path.basename(ddir)
-            image_repo = f"{args.namespace}/{repo_name}"
-            tag = 'latest'
-
-        if not tag:
-            tag = 'latest'
-
-        logging.info('Checking %s:%s (dockerfile=%s)', image_repo, tag, df)
-        last_updated = get_tag_last_updated(image_repo, tag, token=token)
-        if last_updated:
-            dt = parse_iso(last_updated)
-            if dt:
-                age_days = (now - dt).total_seconds() / 86400.0
-                logging.info('Last updated: %s (%.1f days old)', last_updated, age_days)
-                if age_days >= args.threshold_days:
-                    to_rebuild.append((df, ddir, image_repo, tag))
-                else:
-                    logging.info('Skipping %s:%s (fresh)', image_repo, tag)
-            else:
-                logging.info('Could not parse last_updated for %s:%s, scheduling rebuild', image_repo, tag)
-                to_rebuild.append((df, ddir, image_repo, tag))
+        builds = parse_main_yaml_builds(data)
+        if builds:
+            for build in builds:
+                repo = build.get('repo')
+                tags = build.get('tags') or []
+                dockerfile_name = build.get('dockerfile') or 'Dockerfile'
+                dockerfile_path = dockerfile_name if os.path.isabs(dockerfile_name) else os.path.join(ddir, dockerfile_name)
+                if not repo:
+                    if not args.namespace:
+                        logging.warning('No repo found for build in %s and no --namespace provided -> skipping', dockerfile_path)
+                        continue
+                    repo_name = os.path.basename(ddir)
+                    repo = f"{args.namespace}/{repo_name}"
+                if not tags:
+                    tags = ['latest']
+                for tag in tags:
+                    logging.info('Checking %s:%s (dockerfile=%s)', repo, tag, dockerfile_path)
+                    last_updated = get_tag_last_updated(repo, tag, token=token)
+                    if last_updated:
+                        dt = parse_iso(last_updated)
+                        if dt:
+                            age_days = (now - dt).total_seconds() / 86400.0
+                            logging.info('Last updated: %s (%.1f days old)', last_updated, age_days)
+                            if age_days >= args.threshold_days:
+                                found = None
+                                for t in to_rebuild:
+                                    if t['dockerfile'] == dockerfile_path and t['repo'] == repo and t['context'] == ddir:
+                                        found = t
+                                        break
+                                if found:
+                                    if tag not in found['tags']:
+                                        found['tags'].append(tag)
+                                else:
+                                    to_rebuild.append({'dockerfile': dockerfile_path, 'context': ddir, 'repo': repo, 'tags': [tag]})
+                            else:
+                                logging.info('Skipping %s:%s (fresh)', repo, tag)
+                        else:
+                            logging.info('Could not parse last_updated for %s:%s, scheduling rebuild', repo, tag)
+                            found = None
+                            for t in to_rebuild:
+                                if t['dockerfile'] == dockerfile_path and t['repo'] == repo and t['context'] == ddir:
+                                    found = t
+                                    break
+                            if found:
+                                if tag not in found['tags']:
+                                    found['tags'].append(tag)
+                            else:
+                                to_rebuild.append({'dockerfile': dockerfile_path, 'context': ddir, 'repo': repo, 'tags': [tag]})
+                    else:
+                        logging.info('No remote tag info for %s:%s, scheduling build', repo, tag)
+                        found = None
+                        for t in to_rebuild:
+                            if t['dockerfile'] == dockerfile_path and t['repo'] == repo and t['context'] == ddir:
+                                found = t
+                                break
+                        if found:
+                            if tag not in found['tags']:
+                                found['tags'].append(tag)
+                        else:
+                            to_rebuild.append({'dockerfile': dockerfile_path, 'context': ddir, 'repo': repo, 'tags': [tag]})
         else:
-            logging.info('No remote tag info for %s:%s, scheduling build', image_repo, tag)
-            to_rebuild.append((df, ddir, image_repo, tag))
+            image_repo, tag = image_from_yaml(data)
+            if not image_repo:
+                if not args.namespace:
+                    logging.warning('No main.yaml and no --namespace provided for Dockerfile %s -> skipping', df)
+                    continue
+                repo_name = os.path.basename(ddir)
+                image_repo = f"{args.namespace}/{repo_name}"
+                tag = 'latest'
+
+            if not tag:
+                tag = 'latest'
+
+            logging.info('Checking %s:%s (dockerfile=%s)', image_repo, tag, df)
+            last_updated = get_tag_last_updated(image_repo, tag, token=token)
+            if last_updated:
+                dt = parse_iso(last_updated)
+                if dt:
+                    age_days = (now - dt).total_seconds() / 86400.0
+                    logging.info('Last updated: %s (%.1f days old)', last_updated, age_days)
+                    if age_days >= args.threshold_days:
+                        to_rebuild.append({'dockerfile': df, 'context': ddir, 'repo': image_repo, 'tags': [tag]})
+                    else:
+                        logging.info('Skipping %s:%s (fresh)', image_repo, tag)
+                else:
+                    logging.info('Could not parse last_updated for %s:%s, scheduling rebuild', image_repo, tag)
+                    to_rebuild.append({'dockerfile': df, 'context': ddir, 'repo': image_repo, 'tags': [tag]})
+            else:
+                logging.info('No remote tag info for %s:%s, scheduling build', image_repo, tag)
+                to_rebuild.append({'dockerfile': df, 'context': ddir, 'repo': image_repo, 'tags': [tag]})
 
     if not to_rebuild:
         logging.info('No images require rebuilding')
         return
 
-    logging.info('Images to rebuild: %d', len(to_rebuild))
-    for df, ctx, repo, tag in to_rebuild:
-        full_image = f"{repo}:{tag}"
+    logging.info('Build entries to rebuild: %d', len(to_rebuild))
+    for task in to_rebuild:
+        dockerfile = task['dockerfile']
+        ctx = task['context']
+        repo = task['repo']
+        tags = task['tags']
         try:
-            ok = build_and_push(df, ctx, full_image, dry_run=args.dry_run, cleanup=args.cleanup)
+            ok = build_and_push_tags(dockerfile, ctx, repo, tags, dry_run=args.dry_run, cleanup=args.cleanup)
             if ok:
-                logging.info('Successfully refreshed %s', full_image)
+                logging.info('Successfully refreshed %s tags %s', repo, ','.join(tags))
             else:
-                logging.error('Failed to refresh %s', full_image)
+                logging.error('Failed to refresh %s tags %s', repo, ','.join(tags))
         except Exception as e:
-            logging.exception('Error rebuilding %s: %s', full_image, e)
+            logging.exception('Error rebuilding %s tags %s: %s', repo, ','.join(tags), e)
 
 
 if __name__ == '__main__':

@@ -1,3 +1,5 @@
-image: subhajitroy/gromacs-swaxs:2025.0-cuda12.8-gpu-mpi
-# Populated from Docker Hub repository subhajitroy/gromacs-swaxs
-# Tag chosen: 2025.0-cuda12.8-gpu-mpi
+image: subhajitroy/gromacs-swaxs
+# Builds mapping for gromacs-swaxs
+builds:
+  - dockerfile: Dockerfile
+    tags: ["2025.0-cuda12.8-gpu-mpi"]
