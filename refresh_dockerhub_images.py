@@ -25,6 +25,9 @@ import os
 import sys
 import subprocess
 import logging
+import json
+import base64
+import shutil
 from datetime import datetime, timezone
 
 # dependencies
@@ -81,6 +84,75 @@ def image_from_yaml(data):
         repo = data.get('repo') or data.get('name') or data.get('repository')
         if repo:
             return repo, tag
+    return None, None
+
+
+def get_local_docker_credentials(registry='https://index.docker.io/v1/'):
+    """
+    Try to extract Docker Hub credentials from ~/.docker/config.json or via docker credential helper.
+    Returns (username, password_or_token) or (None, None) if not found.
+    """
+    config_path = os.path.expanduser('~/.docker/config.json')
+    if not os.path.exists(config_path):
+        return None, None
+    try:
+        with open(config_path, 'r') as fh:
+            cfg = json.load(fh)
+    except Exception as e:
+        logging.warning('Failed to read docker config: %s', e)
+        return None, None
+    auths = cfg.get('auths', {})
+    keys = [registry, 'https://registry-1.docker.io/', 'registry-1.docker.io', 'https://index.docker.io/v1/', 'docker.io']
+    for k in keys:
+        entry = auths.get(k)
+        if entry:
+            auth = entry.get('auth')
+            if auth:
+                try:
+                    decoded = base64.b64decode(auth).decode()
+                    if ':' in decoded:
+                        u, p = decoded.split(':', 1)
+                        return u, p
+                except Exception:
+                    pass
+            identity = entry.get('IdentityToken') or entry.get('identitytoken')
+            if identity:
+                # IdentityToken may be a bearer token; return it as password with unknown username
+                return None, identity
+
+    creds_store = cfg.get('credsStore')
+    cred_helpers = cfg.get('credHelpers', {})
+    helper = None
+    for k in keys:
+        h = cred_helpers.get(k)
+        if h:
+            helper = h
+            break
+    if not helper and creds_store:
+        helper = creds_store
+    if helper:
+        helper_bin = f'docker-credential-{helper}'
+        if shutil.which(helper_bin):
+            try:
+                proc = subprocess.run([helper_bin, 'get'], input=registry.encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+                out = proc.stdout.decode()
+                j = json.loads(out)
+                uname = j.get('Username') or j.get('username')
+                secret = j.get('Secret') or j.get('secret') or j.get('Password')
+                if uname and secret:
+                    return uname, secret
+            except Exception as e:
+                logging.warning('Credential helper %s failed: %s', helper_bin, e)
+
+    # try docker info to get username (no password)
+    try:
+        out = run_cmd(['docker', 'info', '--format', '{{.Username}}'], check=False)
+        uname = out.strip()
+        if uname:
+            return uname, None
+    except Exception:
+        pass
+
     return None, None
 
 
@@ -201,13 +273,30 @@ def main():
         sys.exit(2)
 
     token = None
+    # Prefer explicit credentials, but fall back to local docker login info when available
     if args.dockerhub_username and args.dockerhub_password:
         token = dockerhub_get_token(args.dockerhub_username, args.dockerhub_password)
-        # also login docker CLI for push
+        # also login docker CLI for push (best-effort)
         try:
             run_cmd(['docker', 'login', '-u', args.dockerhub_username, '--password-stdin'], check=True, input_data=args.dockerhub_password.encode())
         except Exception as e:
             logging.warning('docker login failed: %s', e)
+    else:
+        # Try to use system Docker credentials from ~/.docker/config.json or credential helper
+        local_user, local_pwd = get_local_docker_credentials()
+        if local_user and local_pwd:
+            # we have both username and password/token
+            token = dockerhub_get_token(local_user, local_pwd)
+            try:
+                # try logging in with extracted credentials (best-effort)
+                if local_pwd:
+                    run_cmd(['docker', 'login', '-u', local_user, '--password-stdin'], check=True, input_data=local_pwd.encode())
+            except Exception as e:
+                logging.debug('docker login with local creds failed: %s', e)
+        elif local_user and not local_pwd:
+            logging.info('Found local docker username (%s) but no password/token; relying on existing docker CLI auth for pushes', local_user)
+        else:
+            logging.info('No docker credentials provided or found; proceeding unauthenticated (public repos only)')
 
     dockerfiles = find_dockerfiles(args.root)
     if not dockerfiles:
